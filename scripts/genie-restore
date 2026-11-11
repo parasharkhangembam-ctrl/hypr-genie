@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# genie-restore [ADDR]  ->  bring back a minimised window (default: the last one) with a reverse Genie.
+BIN=$(dirname "$(readlink -f "$0")")
+STACK="${XDG_CACHE_HOME:-$HOME/.cache}/genie-minimized"
+
+minimised_class() {   # prints the class if $1 is sitting in special:minimized
+  hyprctl clients -j | jq -r --arg a "$1" '.[] | select(.address == $a and (.workspace.name | startswith("special:minimized"))) | .class'
+}
+
+addr="${1:-}"; addr="${addr%%,*}"; cls=""
+if [ -n "$addr" ]; then [[ "$addr" != 0x* ]] && addr="0x$addr"; cls=$(minimised_class "$addr"); fi
+while [ -z "$cls" ] && [ -s "$STACK" ]; do
+  addr=$(tail -n 1 "$STACK"); sed -i '$d' "$STACK"
+  cls=$(minimised_class "$addr")
+done
+if [ -z "$cls" ]; then   # nothing on the stack: take any minimised window
+  addr=$(hyprctl clients -j | jq -r '[.[] | select(.workspace.name | startswith("special:minimized"))] | last | .address // empty')
+  [ -n "$addr" ] && cls=$(minimised_class "$addr")
+fi
+[ -z "$cls" ] && exit 0
+
+if [[ "$(hyprctl genie ping 2>/dev/null)" == ok* ]]; then
+  rect=$("$BIN/genie-dock-icon" "$cls" 2>/dev/null)
+  out=$(hyprctl genie restore "$addr" $rect ${GENIE_SLOW:+slow} 2>&1)
+  [[ "$out" == ok* ]] && exit 0
+fi
+# plugin not loaded (or it failed): bring it back without the animation
+ws=$(hyprctl activeworkspace -j | jq -r '.id')
+hyprctl dispatch "hl.dsp.window.move({ workspace = $ws, follow = false, window = \"address:$addr\" })" >/dev/null
+hyprctl dispatch "hl.dsp.focus({ window = \"address:$addr\" })" >/dev/null

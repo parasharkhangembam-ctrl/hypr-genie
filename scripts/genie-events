@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# genie-events  ->  new app windows pour out of their dock icon (reverse Genie).
+# Start it once per session (see README). Turn the effect off with GENIE_OPEN=0.
+BIN=$(dirname "$(readlink -f "$0")")
+SOCK="$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock"
+[ -S "$SOCK" ] || { echo "genie-events: Hyprland's event socket not found" >&2; exit 1; }
+exec 9>"$XDG_RUNTIME_DIR/genie-events.lock"
+flock -n 9 || exit 0                       # already running
+[ "${GENIE_OPEN:-1}" = 0 ] && exit 0
+
+socat -U - UNIX-CONNECT:"$SOCK" | while read -r line; do
+  case $line in openwindow\>\>*)
+    a="0x${line#openwindow>>}"; a="${a%%,*}"
+    read -r ws w h cls < <(hyprctl clients -j | jq -r --arg a "$a" '.[] | select(.address == $a) | "\(.workspace.id) \(.size[0]) \(.size[1]) \(.class)"')
+    # skip hidden workspaces and tiny popups
+    [ -n "${ws:-}" ] && [ "$ws" -ge 0 ] && [ "${w:-0}" -ge 160 ] && [ "${h:-0}" -ge 120 ] || continue
+    ( sleep 0.05; hyprctl genie open "$a" $("$BIN/genie-dock-icon" "$cls") >/dev/null 2>&1 ) &
+  ;; esac
+done

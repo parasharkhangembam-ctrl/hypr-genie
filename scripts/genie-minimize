@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# genie-minimize [ADDR]  ->  Genie the window (default: the focused one) into its dock icon.
+# Slow motion, like the old macOS Shift trick:  GENIE_SLOW=1 genie-minimize
+BIN=$(dirname "$(readlink -f "$0")")
+STACK="${XDG_CACHE_HOME:-$HOME/.cache}/genie-minimized"
+
+addr="${1:-}"; addr="${addr%%,*}"
+[ -n "$addr" ] && [[ "$addr" != 0x* ]] && addr="0x$addr"
+[ -z "$addr" ] && addr=$(hyprctl activewindow -j | jq -r '.address // empty')
+[ -z "$addr" ] && exit 0
+
+if [[ "$(hyprctl genie ping 2>/dev/null)" == ok* ]]; then
+  cls=$(hyprctl clients -j | jq -r --arg a "$addr" '.[] | select(.address == $a) | .class')
+  rect=$("$BIN/genie-dock-icon" "$cls" 2>/dev/null)
+  out=$(hyprctl genie minimize "$addr" $rect ${GENIE_SLOW:+slow} 2>&1)
+else   # plugin not loaded: minimise without the animation
+  hyprctl dispatch "hl.dsp.window.move({ workspace = \"special:minimized\", follow = false, window = \"address:$addr\" })" >/dev/null 2>&1
+  out=ok
+fi
+
+if [[ "$out" == ok* ]]; then
+  mkdir -p "${STACK%/*}" && echo "$addr" >> "$STACK"
+else
+  notify-send -a Genie "Genie: $out" 2>/dev/null || echo "Genie: $out" >&2
+fi

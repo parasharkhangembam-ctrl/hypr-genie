@@ -1,0 +1,38 @@
+# dock-icon.sh CLASS  ->  prints "x y w h": that app's icon in nwg-dock (layout px)
+# Mirrors nwg-dock-hyprland: pinned apps first, then running unpinned apps
+# sorted by workspace id and class, launcher button last; icons shrink when
+# there are more than 6 items. Uses the dock's real position when it is shown.
+cls="$1"
+PIN="$HOME/.cache/nwg-dock-pinned"
+ICON=${GENIE_DOCK_ICON:-48}       # nwg-dock-hyprland -i 48
+MARGIN=${GENIE_DOCK_MARGIN:-8}    # nwg-dock-hyprland -mb 8
+
+read -r mx my mw mh < <(hyprctl monitors -j | jq -r '.[] | select(.focused) | "\(.x) \(.y) \((.width / .scale) | floor) \((.height / .scale) | floor)"')
+
+items=()
+add() { local x; for x in "${items[@]}"; do [ "$x" = "$1" ] && return; done; items+=("$1"); }
+while IFS= read -r p; do [ -n "$p" ] && add "$p"; done < <(cat "$PIN" 2>/dev/null)
+while IFS= read -r c; do [ -n "$c" ] && add "$c"; done < <(hyprctl clients -j | jq -r 'sort_by(.workspace.id, .class) | .[].class')
+
+n=${#items[@]}
+idx=-1
+for i in "${!items[@]}"; do [ "${items[$i]}" = "$cls" ] && { idx=$i; break; }; done
+if [ "$idx" -lt 0 ]; then
+  for i in "${!items[@]}"; do [ "${items[$i],,}" = "${cls,,}" ] && { idx=$i; break; }; done
+fi
+
+size=$ICON
+if [ "$n" -gt 0 ] && [ $(( ICON * 6 / n )) -lt "$ICON" ]; then size=$(( ICON * 6 / (6 + (n - 6) / 3) )); fi
+total=$(( n + 1 ))   # + launcher button
+
+dock=$(hyprctl layers -j 2>/dev/null | jq -r '[.. | objects | select(.namespace? == "nwg-dock" and ((.w // 0) > 0))] | first | if . == null then "" else "\(.x) \(.y) \(.w) \(.h)" end' 2>/dev/null)
+if [ -n "$dock" ]; then
+  read -r dx dy dw dh <<< "$dock"
+  awk -v dx="$dx" -v dy="$dy" -v dw="$dw" -v dh="$dh" -v t="$total" -v i="$idx" -v s="$size" \
+    'BEGIN { st = dw / t; cx = dx + dw / 2; if (i >= 0) cx = dx + st * (i + 0.5); cy = dy + dh / 2;
+             printf "%d %d %d %d\n", cx - s / 2, cy - s / 2, s, s }'
+else
+  awk -v mx="$mx" -v my="$my" -v mw="$mw" -v mh="$mh" -v t="$total" -v i="$idx" -v s="$size" -v m="$MARGIN" \
+    'BEGIN { st = s + 21; cx = mx + mw / 2; if (i >= 0) cx = mx + mw / 2 + (i - (t - 1) / 2) * st; cy = my + mh - m - st / 2;
+             printf "%d %d %d %d\n", cx - s / 2, cy - s / 2, s, s }'
+fi
