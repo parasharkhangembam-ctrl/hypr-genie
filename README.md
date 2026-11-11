@@ -4,7 +4,7 @@ The macOS **Genie effect** for [Hyprland](https://hypr.land): windows bend into 
 
 It's a native Hyprland plugin written in C++. It draws the window as a few hundred thin strips, bending each one along an S-curve toward the icon.
 
-<!-- demo: docs/demo.gif -->
+![Genie demo](docs/demo.gif)
 
 ## Features
 
