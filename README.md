@@ -11,7 +11,7 @@ It's a native Hyprland plugin written in C++. It draws the window as a few hundr
 - **Minimise:** the window is pulled into **its own Dock icon**, not just the bottom of the screen.
 - **Restore:** it pours back out to exactly where it was.
 - **Open:** new app windows pour out of their icon.
-- **The app's own buttons work too.** A title-bar minimise button (yellow traffic light) triggers the Genie.
+- **The app's own buttons work too.** A title-bar minimise button (yellow traffic light) triggers the Genie. Plain Hyprland tells apps it can't minimise, so GTK 4 / libadwaita apps hide or disable that button; Genie tells them it can, so the yellow button works everywhere.
 - **Slow motion,** like the old macOS Shift-click trick: `GENIE_SLOW=1 genie-minimize`.
 - **Adjustable speed:** `hyprctl genie duration 0.4`.
 - **Safe to unload.** If the plugin isn't loaded, the scripts still minimise and restore, just without the animation.

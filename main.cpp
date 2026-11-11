@@ -57,7 +57,7 @@
 #include <unistd.h>
 
 inline HANDLE               PHANDLE = nullptr;
-static constexpr const char* GENIE_VERSION = "1.2";
+static constexpr const char* GENIE_VERSION = "1.3";
 
 // ---------------------------------------------------------------- state ----
 struct SGenieAnim {
@@ -501,11 +501,42 @@ static std::string minimizeHelper() {
     return access(P.c_str(), X_OK) == 0 ? P : "";
 }
 
+// Hyprland keeps a toplevel's protocol object private; this standard C++ idiom (explicit
+// template instantiation may name private members) lets the plugin send it one event.
+struct SToplevelResourceTag {
+    using type = SP<CXdgToplevel> CXDGToplevelResource::*;
+    friend type toplevelResource(SToplevelResourceTag);
+};
+template <typename Tag, typename Tag::type M>
+struct SGenieRob {
+    friend typename Tag::type toplevelResource(Tag) { return M; }
+};
+template struct SGenieRob<SToplevelResourceTag, &CXDGToplevelResource::m_resource>;
+
+// Hyprland tells apps it can only fullscreen and maximise; with Genie loaded it can minimise
+// too. Saying so makes GTK 4 / libadwaita apps show a real minimise (yellow) button.
+static void advertiseMinimize(const SP<CXDGToplevelResource>& tl) {
+    if (!tl)
+        return;
+    const auto& RES = tl.get()->*toplevelResource(SToplevelResourceTag{});
+    if (!RES || RES->version() < 5)
+        return;
+    wl_array arr;
+    wl_array_init(&arr);
+    for (const auto CAP : {XDG_TOPLEVEL_WM_CAPABILITIES_FULLSCREEN, XDG_TOPLEVEL_WM_CAPABILITIES_MAXIMIZE, XDG_TOPLEVEL_WM_CAPABILITIES_MINIMIZE})
+        *sc<uint32_t*>(wl_array_add(&arr, sizeof(uint32_t))) = sc<uint32_t>(CAP);
+    RES->sendWmCapabilities(&arr);
+    wl_array_release(&arr);
+    if (const auto OWNER = tl->m_owner.lock(); OWNER)
+        OWNER->scheduleConfigure(); // the protocol wants a configure after new capabilities
+}
+
 // an app asked to be minimised / maximised (its own title-bar buttons)
 static void hookWindowXDG(PHLWINDOW W) {
     if (!W || !W->m_xdgSurface || !W->m_xdgSurface->m_toplevel) return;
     auto tl = W->m_xdgSurface->m_toplevel.lock();
     if (!tl) return;
+    advertiseMinimize(tl);
     g_windowListeners.emplace_back(tl->m_events.stateChanged.registerListener([w = PHLWINDOWREF(W), tlWeak = WP<CXDGToplevelResource>(tl)](std::any) {
         auto win = w.lock();
         auto toplevel = tlWeak.lock();
