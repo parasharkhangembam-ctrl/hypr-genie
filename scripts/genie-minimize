@@ -17,7 +17,7 @@ if [ -n "$fs" ] && [ "$fs" != "0" ] && [ "$fs" != "false" ]; then
     f=$(hyprctl clients -j | jq -r --arg a "$addr" '.[] | select(.address == $a) | (.fullscreen|tostring)')
     { [ "$f" = "0" ] || [ "$f" = "false" ]; } && break; sleep 0.05
   done
-  sleep 0.3                # let the un-fullscreen animation finish so the Genie starts from the real window
+  sleep 0.55               # let it land back on its desktop so the Genie starts from the real window
 fi
 # <<< paraz-fs-minimize
 
