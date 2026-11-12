@@ -59,7 +59,7 @@
 #include <unistd.h>
 
 inline HANDLE               PHANDLE = nullptr;
-static constexpr const char* GENIE_VERSION = "1.4.2";
+static constexpr const char* GENIE_VERSION = "1.4.3";
 
 // ---------------------------------------------------------------- state ----
 struct SGenieAnim {
@@ -266,8 +266,10 @@ struct SDeskSnap {
     std::vector<SP<Render::IFramebuffer>> fbs;
     std::chrono::steady_clock::time_point at;
     bool                                  pending = false;
+    bool                                  sliding = false;
 };
 static std::vector<SP<SDeskSnap>> g_deskSnaps;
+static SP<CEventLoopTimer>        g_deskTimer; // keeps the picture (clock) fresh while idle
 
 static SP<SDeskSnap> deskSnapFor(PHLMONITOR m) {
     std::erase_if(g_deskSnaps, [](const auto& s) { return !s->monitor.lock(); });
@@ -402,14 +404,25 @@ static void desktopSlide() {
     if (!MON)
         return;
     auto offs = slideOffsets(MON);
+    if (offs.empty()) {
+        for (const auto& s : g_deskSnaps) {
+            if (s->monitor.lock() == MON && s->sliding && !s->pending) {
+                s->sliding = false;
+                s->pending = true;
+                g_pEventLoopManager->doLater([w = WP<SDeskSnap>(s)] { refreshDeskSnap(w); });
+            }
+        }
+    }
     if (offs.empty())
         return;
     const auto S   = deskSnapFor(MON);
     const auto AGE = std::chrono::duration<double>(std::chrono::steady_clock::now() - S->at).count();
-    if ((S->fbs.empty() || AGE > 5.0) && !S->pending) { // fresh enough for the clock
+    (void)AGE;
+    if (S->fbs.empty() && !S->pending) { // only the very first slide: never re-snapshot mid-slide (that stutters)
         S->pending = true;
         g_pEventLoopManager->doLater([w = WP<SDeskSnap>(S)] { refreshDeskSnap(w); });
     }
+    S->sliding = true;
     if (!S->fbs.empty())
         g_pHyprRenderer->m_renderPass.add(makeUnique<CDeskSlideElement>(WP<SDeskSnap>(S), std::move(offs)));
 }
@@ -740,6 +753,14 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         throw std::runtime_error("[genie] version mismatch");
     }
 
+    g_deskTimer = makeShared<CEventLoopTimer>(std::chrono::seconds(20), [](SP<CEventLoopTimer> self, void*) {
+        for (const auto& s : g_deskSnaps) {
+            if (!s->sliding && !s->pending)
+                refreshDeskSnap(s);
+        }
+        self->updateTimeout(std::chrono::seconds(20));
+    }, nullptr);
+    g_pEventLoopManager->addTimer(g_deskTimer);
     g_renderListener = Event::bus()->m_events.render.stage.listen(std::function<void(eRenderStage)>{[](eRenderStage s) { onRenderStage(s); }});
     g_cmd            = HyprlandAPI::registerHyprCtlCommand(PHANDLE, SHyprCtlCommand{.name = "genie", .exact = false, .fn = onCommand});
 
@@ -751,6 +772,10 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
+    if (g_deskTimer) {
+        g_pEventLoopManager->removeTimer(g_deskTimer);
+        g_deskTimer.reset();
+    }
     g_deskSnaps.clear();
     // never leave a restoring window invisible
     for (const auto& a : g_anims) {
