@@ -38,6 +38,8 @@
 #include <hyprland/src/managers/eventLoop/EventLoopManager.hpp>
 #include <hyprland/src/managers/eventLoop/EventLoopTimer.hpp>
 
+#include <hyprland/src/state/WorkspaceState.hpp>
+#include <hyprland/src/desktop/view/LayerSurface.hpp>
 #include "genie_math.hpp"
 
 #include <algorithm>
@@ -57,7 +59,7 @@
 #include <unistd.h>
 
 inline HANDLE               PHANDLE = nullptr;
-static constexpr const char* GENIE_VERSION = "1.3";
+static constexpr const char* GENIE_VERSION = "1.4";
 
 // ---------------------------------------------------------------- state ----
 struct SGenieAnim {
@@ -251,7 +253,154 @@ static void startAnim(const SP<SGenieAnim>& a, bool slow) {
         g_pHyprRenderer->damageMonitor(M);
 }
 
+// ------------------------------------------------ desktop slide (Spaces) ----
+// macOS slides the whole Space - wallpaper and desktop widgets included. Hyprland
+// keeps background/bottom layers (wallpaper, desktop clock) still and only slides
+// windows. While a workspace slides we cover those layers and draw a snapshot of
+// them at every sliding workspace's offset, so the desktop moves with its Space.
+// hyprctl genie desktopslide on|off
+static bool g_desktopSlide = true;
+
+struct SDeskSnap {
+    PHLMONITORREF                         monitor;
+    std::vector<SP<Render::IFramebuffer>> fbs;
+    std::chrono::steady_clock::time_point at;
+    bool                                  pending = false;
+};
+static std::vector<SP<SDeskSnap>> g_deskSnaps;
+
+static SP<SDeskSnap> deskSnapFor(PHLMONITOR m) {
+    std::erase_if(g_deskSnaps, [](const auto& s) { return !s->monitor.lock(); });
+    for (const auto& s : g_deskSnaps) {
+        if (s->monitor.lock() == m)
+            return s;
+    }
+    auto s     = makeShared<SDeskSnap>();
+    s->monitor = m;
+    g_deskSnaps.emplace_back(s);
+    return s;
+}
+
+// runs outside rendering (doLater): snapshot every background + bottom layer
+static void refreshDeskSnap(WP<SDeskSnap> ws) {
+    const auto S = ws.lock();
+    if (!S)
+        return;
+    S->pending   = false;
+    const auto M = S->monitor.lock();
+    if (!M)
+        return;
+    std::vector<SP<Render::IFramebuffer>> fbs;
+    for (size_t lvl : {0, 1}) { // 0 = background (wallpaper), 1 = bottom (desktop widgets)
+        for (const auto& ref : M->m_layerSurfaceLayers[lvl]) {
+            const auto LS = ref.lock();
+            if (!LS || !LS->m_mapped)
+                continue;
+            if (auto fb = g_pHyprRenderer->makeSnapshotFB(LS); fb)
+                fbs.emplace_back(fb);
+        }
+    }
+    S->fbs = std::move(fbs);
+    S->at  = std::chrono::steady_clock::now();
+    g_pHyprRenderer->damageMonitor(M);
+}
+
+// offsets (layout px) of the workspaces visible on this monitor while they slide; empty when nothing slides
+static std::vector<Vector2D> slideOffsets(PHLMONITOR M) {
+    std::vector<Vector2D> offs;
+    bool                  moving = false;
+    for (const auto& ref : State::workspaceState()->workspaces()) {
+        const auto WS = ref.lock();
+        if (!WS || WS->m_isSpecialWorkspace || WS->m_monitor.lock() != M)
+            continue;
+        const Vector2D O    = WS->m_renderOffset->value();
+        const bool     ANIM = WS->m_renderOffset->isBeingAnimated();
+        if (std::abs(O.x) >= M->m_size.x - 0.5 || std::abs(O.y) >= M->m_size.y - 0.5)
+            continue; // completely off screen
+        const bool OFFSET = std::abs(O.x) > 0.5 || std::abs(O.y) > 0.5;
+        if (WS != M->m_activeWorkspace && !ANIM && !OFFSET)
+            continue; // an idle workspace that isn't shown
+        moving = moving || ANIM || OFFSET;
+        offs.emplace_back(O);
+    }
+    if (!moving)
+        offs.clear();
+    return offs;
+}
+
+class CDeskSlideElement : public IPassElement {
+  public:
+    CDeskSlideElement(WP<SDeskSnap> snap, std::vector<Vector2D> offs) : m_snap(snap), m_offs(std::move(offs)) {
+        ;
+    }
+    virtual ~CDeskSlideElement() = default;
+
+    virtual std::vector<UP<IPassElement>> draw() override {
+        const auto S = m_snap.lock();
+        const auto M = S ? S->monitor.lock() : nullptr;
+        if (!S || !M || S->fbs.empty() || !Render::GL::g_pHyprOpenGL)
+            return {};
+        const auto PX = M->m_pixelSize;
+        g_pHyprRenderer->pushMonitorTransformEnabled(true);
+        // hide the still wallpaper / widgets underneath
+        Render::GL::g_pHyprOpenGL->renderRect(CBox{0, 0, PX.x, PX.y}, CHyprColor(0, 0, 0, 1), {.damage = &g_pHyprRenderer->m_renderData.damage});
+        for (const auto& O : m_offs) {
+            const CBox BOX{O.x * M->m_scale, O.y * M->m_scale, PX.x, PX.y};
+            for (const auto& fb : S->fbs) {
+                const auto TEX = fb ? fb->getTexture() : nullptr;
+                if (!TEX || !TEX->ok())
+                    continue;
+                Render::GL::g_pHyprOpenGL->renderTexture(TEX, BOX, {.damage = &g_pHyprRenderer->m_renderData.damage, .a = 1.F, .allowDim = false});
+            }
+        }
+        g_pHyprRenderer->popMonitorTransformEnabled();
+        return {};
+    }
+    virtual bool needsLiveBlur() override {
+        return false;
+    }
+    virtual bool needsPrecomputeBlur() override {
+        return false;
+    }
+    virtual const char* passName() override {
+        return "CDeskSlideElement";
+    }
+    virtual ePassElementType type() override {
+        return EK_CUSTOM;
+    }
+    virtual bool undiscardable() override {
+        return true;
+    }
+
+  private:
+    WP<SDeskSnap>         m_snap;
+    std::vector<Vector2D> m_offs;
+};
+
+static void desktopSlide() {
+    if (!g_desktopSlide || g_pHyprRenderer->m_bRenderingSnapshot)
+        return;
+    const auto MON = g_pHyprRenderer->m_renderData.pMonitor.lock();
+    if (!MON)
+        return;
+    auto offs = slideOffsets(MON);
+    if (offs.empty())
+        return;
+    const auto S   = deskSnapFor(MON);
+    const auto AGE = std::chrono::duration<double>(std::chrono::steady_clock::now() - S->at).count();
+    if ((S->fbs.empty() || AGE > 5.0) && !S->pending) { // fresh enough for the clock
+        S->pending = true;
+        g_pEventLoopManager->doLater([w = WP<SDeskSnap>(S)] { refreshDeskSnap(w); });
+    }
+    if (!S->fbs.empty())
+        g_pHyprRenderer->m_renderPass.add(makeUnique<CDeskSlideElement>(WP<SDeskSnap>(S), std::move(offs)));
+}
+
 static void onRenderStage(eRenderStage stage) {
+    if (stage == RENDER_PRE_WINDOWS) {
+        desktopSlide();
+        return;
+    }
     if (stage != RENDER_POST_WINDOWS || g_anims.empty())
         return;
 
@@ -416,7 +565,7 @@ static std::string doOpen(PHLWINDOW W, std::optional<CBox> iconBox, bool slow) {
 static const char* USAGE = "usage: hyprctl genie minimize [0xADDR] [x y w h] [slow]\n"
                            "       hyprctl genie restore 0xADDR [x y w h] [slow]\n"
                            "       hyprctl genie open|close [0xADDR] [x y w h] [slow]\n"
-                           "       hyprctl genie duration <seconds> | ping | status";
+                           "       hyprctl genie duration <seconds> | desktopslide on|off | ping | status";
 
 static std::string onCommand(eHyprCtlOutputFormat, std::string request) {
     std::istringstream       in(request);
@@ -433,6 +582,11 @@ static std::string onCommand(eHyprCtlOutputFormat, std::string request) {
     if (verb == "status")
         return std::format("ok genie {}: {} running, duration {:.2f}s", GENIE_VERSION, g_anims.size(), g_seconds);
 
+    if (verb == "desktopslide") {
+        if (!rest.empty())
+            g_desktopSlide = rest[0] == "on" || rest[0] == "1" || rest[0] == "true";
+        return std::format("ok desktopslide {}", g_desktopSlide ? "on" : "off");
+    }
     if (verb == "duration") {
         if (rest.empty())
             return std::format("ok {:.2f}", g_seconds);
@@ -579,6 +733,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
+    g_deskSnaps.clear();
     // never leave a restoring window invisible
     for (const auto& a : g_anims) {
         if (a->safety)

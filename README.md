@@ -102,3 +102,7 @@ Then remove the Genie lines from your `hyprland.lua`.
 Made by **Parashar Khangembam** as part of building a macOS-style desktop on Hyprland from scratch, written with help from Claude (Anthropic). The two-phase approach follows Harshil Shah's write-up *"Recreating the Mac genie effect"* and BCGenieEffect.
 
 MIT licence, see [LICENSE](LICENSE).
+
+## Desktop slide (1.4)
+
+macOS slides the whole Space, wallpaper and desktop widgets included; Hyprland only slides windows. Genie draws your wallpaper and desktop widgets (background + bottom layers) sliding along with each workspace, for keyboard switches and 3-finger swipes. Turn it off with `hyprctl genie desktopslide off`.
