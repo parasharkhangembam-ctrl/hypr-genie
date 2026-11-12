@@ -61,7 +61,7 @@
 #include <unistd.h>
 
 inline HANDLE               PHANDLE = nullptr;
-static constexpr const char* GENIE_VERSION = "1.5.1";
+static constexpr const char* GENIE_VERSION = "1.5.2";
 
 // ---------------------------------------------------------------- state ----
 struct SGenieAnim {
@@ -376,7 +376,10 @@ class CDeskSlideElement : public IPassElement {
             Render::GL::g_pHyprOpenGL->renderRect(CBox{0, 0, PX.x, PX.y}, CHyprColor(0, 0, 0, 1), {.damage = &DAMAGE});
         for (const auto& l : m_layers) { // bottom-most layer first, both strip halves
             for (const auto& O : m_offs) {
-                const CBox BOX{(l.box.x + O.x) * S, (l.box.y + O.y) * S, l.box.w * S, l.box.h * S};
+                // whole physical pixels, exactly like Hyprland's own surfaces (SurfacePassElement rounds
+                // its box): in-between positions make thin strokes (the clock) shimmer while moving
+                const CBox BOX{std::round(l.box.x * S) + std::round(O.x * S), std::round(l.box.y * S) + std::round(O.y * S), std::round(l.box.w * S),
+                               std::round(l.box.h * S)};
                 if (BOX.x >= PX.x || BOX.y >= PX.y || BOX.x + BOX.w <= 0 || BOX.y + BOX.h <= 0)
                     continue; // this half is off screen
                 Render::GL::g_pHyprOpenGL->renderTexture(l.tex, BOX, {.damage = &DAMAGE, .surface = l.surface, .a = 1.F, .allowDim = false});
