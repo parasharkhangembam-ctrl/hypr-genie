@@ -59,7 +59,7 @@
 #include <unistd.h>
 
 inline HANDLE               PHANDLE = nullptr;
-static constexpr const char* GENIE_VERSION = "1.4";
+static constexpr const char* GENIE_VERSION = "1.4.2";
 
 // ---------------------------------------------------------------- state ----
 struct SGenieAnim {
@@ -324,8 +324,26 @@ static std::vector<Vector2D> slideOffsets(PHLMONITOR M) {
         offs.emplace_back(O);
     }
     if (!moving)
-        offs.clear();
-    return offs;
+        return {};
+    // One seamless strip: the reference Space (prefer the active one) + its neighbour on the
+    // side it is sliding from. Two separate animations (in/out speeds) can leave a gap otherwise.
+    Vector2D R;
+    const Vector2D A = M->m_activeWorkspace ? M->m_activeWorkspace->m_renderOffset->value() : Vector2D{};
+    if (std::abs(A.x) > 0.5 || std::abs(A.y) > 0.5)
+        R = A;
+    else {
+        for (const auto& o : offs) {
+            if (std::abs(o.x) > 0.5 || std::abs(o.y) > 0.5) {
+                R = o;
+                break;
+            }
+        }
+    }
+    if (std::abs(R.x) <= 0.5 && std::abs(R.y) <= 0.5)
+        return {};
+    const bool     H = std::abs(R.x) >= std::abs(R.y);
+    const Vector2D N = H ? Vector2D{R.x - std::copysign(M->m_size.x, R.x), R.y} : Vector2D{R.x, R.y - std::copysign(M->m_size.y, R.y)};
+    return {R, N};
 }
 
 class CDeskSlideElement : public IPassElement {
