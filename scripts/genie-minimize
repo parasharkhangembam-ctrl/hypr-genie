@@ -8,6 +8,18 @@ addr="${1:-}"; addr="${addr%%,*}"
 [ -n "$addr" ] && [[ "$addr" != 0x* ]] && addr="0x$addr"
 [ -z "$addr" ] && addr=$(hyprctl activewindow -j | jq -r '.address // empty')
 [ -z "$addr" ] && exit 0
+# >>> paraz-fs-minimize: yellow on a full-screen window -> leave full screen first, then Genie
+fs=$(hyprctl clients -j | jq -r --arg a "$addr" '.[] | select(.address == $a) | (.fullscreen|tostring)')
+if [ -n "$fs" ] && [ "$fs" != "0" ] && [ "$fs" != "false" ]; then
+  hyprctl dispatch "hl.dsp.focus({ window = \"address:$addr\" })" >/dev/null
+  hyprctl dispatch 'hl.dsp.window.fullscreen({ action = "unset" })' >/dev/null
+  for _ in $(seq 20); do   # wait (max 1 s) until it's really windowed again
+    f=$(hyprctl clients -j | jq -r --arg a "$addr" '.[] | select(.address == $a) | (.fullscreen|tostring)')
+    { [ "$f" = "0" ] || [ "$f" = "false" ]; } && break; sleep 0.05
+  done
+  sleep 0.3                # let the un-fullscreen animation finish so the Genie starts from the real window
+fi
+# <<< paraz-fs-minimize
 
 if [[ "$(hyprctl genie ping 2>/dev/null)" == ok* ]]; then
   cls=$(hyprctl clients -j | jq -r --arg a "$addr" '.[] | select(.address == $a) | .class')
