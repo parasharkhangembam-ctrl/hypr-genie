@@ -103,6 +103,6 @@ Made by **Parashar Khangembam** as part of building a macOS-style desktop on Hyp
 
 MIT licence, see [LICENSE](LICENSE).
 
-## Desktop slide (1.4)
+## Desktop slide (1.5)
 
-macOS slides the whole Space, wallpaper and desktop widgets included; Hyprland only slides windows. Genie draws your wallpaper and desktop widgets (background + bottom layers) sliding along with each workspace, for keyboard switches and 3-finger swipes. Turn it off with `hyprctl genie desktopslide off`.
+macOS slides the whole Space, wallpaper and desktop widgets included; Hyprland only slides windows. Genie draws your wallpaper and desktop widgets (background + bottom layers, from their live textures) as one seamless strip that moves with the Space, for keyboard switches and 3-finger swipes. The strip is an opaque pass element, so Hyprland skips the still desktop underneath and windows cut it out like they cut out the wallpaper: it costs the same GPU work as no slide at all. `hyprctl genie desktopslide` shows frame pacing with the slide on and off; `off` turns it off.
