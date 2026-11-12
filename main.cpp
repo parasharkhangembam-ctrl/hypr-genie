@@ -61,7 +61,7 @@
 #include <unistd.h>
 
 inline HANDLE               PHANDLE = nullptr;
-static constexpr const char* GENIE_VERSION = "1.5";
+static constexpr const char* GENIE_VERSION = "1.5.1";
 
 // ---------------------------------------------------------------- state ----
 struct SGenieAnim {
@@ -416,6 +416,25 @@ class CDeskSlideElement : public IPassElement {
 };
 
 static bool g_dsWasSliding = false;
+
+// Hyprland only repaints the areas where *windows* move while a workspace slides
+// (AnimationManager.cpp preDamageWorkspace) - a still desktop never needed repainting.
+// Ours moves, so the whole monitor is repainted on every slide frame and once more
+// when the slide ends; otherwise parts of the old desktop stay frozen on screen.
+inline decltype(Event::bus()->m_events.render.pre.listen(std::function<void(PHLMONITOR)>{})) g_renderPreListener;
+static std::vector<PHLMONITORREF>                                                              g_dsSlidingMons;
+
+static void onRenderPre(PHLMONITOR M) { // runs after the animation tick, before damage is collected
+    if (!M)
+        return;
+    const bool SLIDING = g_desktopSlide && !slideOffsets(M).empty();
+    const bool WAS     = std::ranges::any_of(g_dsSlidingMons, [&](const auto& m) { return m.lock() == M; });
+    if (SLIDING || WAS)
+        M->m_forceFullFrames = std::max(M->m_forceFullFrames, 1);
+    std::erase_if(g_dsSlidingMons, [&](const auto& m) { return !m.lock() || m.lock() == M; });
+    if (SLIDING)
+        g_dsSlidingMons.emplace_back(M);
+}
 
 static void desktopSlide() {
     g_dsCalls++;
@@ -804,6 +823,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         self->updateTimeout(std::chrono::seconds(20));
     }, nullptr);
     g_pEventLoopManager->addTimer(g_deskTimer);
+    g_renderPreListener = Event::bus()->m_events.render.pre.listen(std::function<void(PHLMONITOR)>{[](PHLMONITOR m) { onRenderPre(m); }});
     g_renderListener = Event::bus()->m_events.render.stage.listen(std::function<void(eRenderStage)>{[](eRenderStage s) { onRenderStage(s); }});
     g_cmd            = HyprlandAPI::registerHyprCtlCommand(PHANDLE, SHyprCtlCommand{.name = "genie", .exact = false, .fn = onCommand});
 
@@ -833,6 +853,7 @@ APICALL EXPORT void PLUGIN_EXIT() {
     }
     g_anims.clear();
     g_savedBoxes.clear();
+    g_renderPreListener = {};
     g_renderListener = {};
     g_windowListeners.clear();
     g_openListener = {};
